@@ -71,6 +71,8 @@
 ##
 ## The above example is with mutually exclusive database access.
 ## This is not a limitation of the module, but is how the example is written.
+
+
 import db_sqlite, db_mysql, db_postgres, oids
 
 type
@@ -81,11 +83,11 @@ type
   DbDataObj = tuple[kind: DbKind, id: Oid, db: pointer]
   Row* = seq[string]  ## a row of a dataset. NULL database values will be
                       ## transformed always to the empty string.
-  InstantRow* = tuple[row: seq[string], len: int] ## a handle that
+  InstantRow* = tuple[row: seq[string], len: int]  ## a handle that
                       ## can be used to get a row's column text on demand
-  SqlQuery* = distinct string   ## an SQL query string
-  EDb* = object of IOError  ## exception that is raised if a
-                            ## database error occurs
+  SqlQuery* = distinct string  ## an SQL query string
+  DbError* = object of IOError  ## exception that is raised if a
+                                ## database error occurs
 
   DbObj = object of RootObj  ## A collection of Db interfaces (independant of db type)
     len: int
@@ -108,8 +110,8 @@ proc initDb(knd: DbKind): DbConnId =
   inc(theDbObj.len)
 
 proc dbError*(msg: string) {.noreturn.} =
-  ## Raises an EDb exception with message `msg`.
-  var e: ref EDb
+  ## Raises an DbError exception with message `msg`.
+  var e: ref DbError
   new(e)
   e.msg = msg
   raise e
@@ -132,7 +134,8 @@ proc dbQuote*(s: string): string {.raises: [], tags: [].} =
   ## DB quotes the string.
   result = db_mysql.dbQuote(s)
 
-template doEachCmdResNoErr(cmd: expr, dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): stmt =
+template doEachCmdResNoErr(cmd: untyped; dbId: DbConnId; query: SqlQuery;
+                           args: varargs[string, `$`]) =
   let db = dbId.getDbId(theDbObj)
   case theDbObj.dbInfo[db].kind:
     of Sqlite:
@@ -146,7 +149,8 @@ template doEachCmdResNoErr(cmd: expr, dbId: DbConnId; query: SqlQuery; args: var
       result = db_postgres.`cmd`(dbConn, db_postgres.SqlQuery(query), args)
     else: discard
 
-template doEachCmdResErr(cmd: expr, dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): stmt =
+template doEachCmdResErr(cmd: untyped; dbId: DbConnId; query: SqlQuery;
+                         args: varargs[string, `$`]) =
   let db = dbId.getDbId(theDbObj)
   case theDbObj.dbInfo[db].kind:
     of Sqlite:
@@ -160,7 +164,8 @@ template doEachCmdResErr(cmd: expr, dbId: DbConnId; query: SqlQuery; args: varar
       result = db_postgres.`cmd`(dbConn, db_postgres.SqlQuery(query), args)
     else: dbError("Error: unknown Db type")
 
-template doEachCmdNoResErr(cmd: expr, dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): stmt =
+template doEachCmdNoResErr(cmd: untyped; dbId: DbConnId; query: SqlQuery;
+                           args: varargs[string, `$`]) =
   let db = dbId.getDbId(theDbObj)
   case theDbObj.dbInfo[db].kind:
     of Sqlite:
@@ -174,7 +179,8 @@ template doEachCmdNoResErr(cmd: expr, dbId: DbConnId; query: SqlQuery; args: var
       db_postgres.`cmd`(dbConn, db_postgres.SqlQuery(query), args)
     else: dbError("Error: unknown Db type")
 
-discard """template doEachCmdNoResNoErr(cmd: expr, dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): stmt =
+discard """template doEachCmdNoResNoErr(cmd: untyped; dbId: DbConnId;
+                                        query: SqlQuery; args: varargs[string, `$`]) =
   let db = dbId.getDbId(theDbObj)
   case theDbObj.dbInfo[db].kind:
     of Sqlite:
@@ -186,67 +192,69 @@ discard """template doEachCmdNoResNoErr(cmd: expr, dbId: DbConnId; query: SqlQue
     of Postgres:
       let dbConn = cast[db_postgres.DbConn](theDbObj.dbInfo[db].db)
       db_postgres.`cmd`(dbConn, db_postgres.SqlQuery(query), args)
-    else: discard"""
+    else: discard
+"""
 
 proc tryExec*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): bool {.
-    tags: [db_sqlite.FReadDb, db_mysql.FReadDb, db_postgres.FReadDb,
-      db_sqlite.FWriteDb, db_mysql.FWriteDb, db_postgres.FWriteDb],
-    raises: [db_postgres.EDb].} =
+    tags: [db_sqlite.ReadDbEffect, db_mysql.ReadDbEffect, db_postgres.ReadDbEffect,
+           db_sqlite.WriteDbEffect, db_mysql.WriteDbEffect, db_postgres.WriteDbEffect],
+    raises: [db_postgres.DbError].} =
   ## Tries to execute the query and returns true if successful, false otherwise.
   result = false
   doEachCmdResNoErr(tryExec, dbId, query, args)
 
 proc exec*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]) {.
-    tags: [db_sqlite.FReadDb, db_mysql.FReadDb, db_postgres.FReadDb,
-      db_sqlite.FWriteDb, db_mysql.FWriteDb, db_postgres.FWriteDb],
-    raises: [db_sqlite.EDb, db_mysql.EDb, db_postgres.EDb, EDb].} =
-  ## Executes the query and raises EDB if not successful.
+    tags: [db_sqlite.ReadDbEffect, db_mysql.ReadDbEffect, db_postgres.ReadDbEffect,
+           db_sqlite.WriteDbEffect, db_mysql.WriteDbEffect, db_postgres.WriteDbEffect],
+    raises: [db_sqlite.DbError, db_mysql.DbError, db_postgres.DbError, DbError].} =
+  ## Executes the query and raises DbError if not successful.
   doEachCmdNoResErr(exec, dbId, query, args)
 
 proc getRow*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): Row {.
-    tags: [db_sqlite.FReadDb, db_mysql.FReadDb, db_postgres.FReadDb],
-    raises: [db_sqlite.EDb, db_mysql.EDb, db_postgres.EDb, EDb].} =
+    tags: [db_sqlite.ReadDbEffect, db_mysql.ReadDbEffect, db_postgres.ReadDbEffect],
+    raises: [db_sqlite.DbError, db_mysql.DbError, db_postgres.DbError, DbError].} =
   ## Retrieves a single row. If the query doesn't return any rows,
   ## this proc will return a Row with empty strings for each column.
   doEachCmdResErr(getRow, dbId, query, args)
 
 proc getAllRows*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): seq[Row] {.
-    tags: [db_sqlite.FReadDb, db_mysql.FReadDb, db_postgres.FReadDb],
-    raises: [db_sqlite.EDb, db_mysql.EDb, db_postgres.EDb, EDb].} =
+    tags: [db_sqlite.ReadDbEffect, db_mysql.ReadDbEffect, db_postgres.ReadDbEffect],
+    raises: [db_sqlite.DbError, db_mysql.DbError, db_postgres.DbError, DbError].} =
   ## Executes the query and returns the whole result dataset.
   doEachCmdResErr(getAllRows, dbId, query, args)
 
 proc getValue*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): string {.
-    tags: [db_sqlite.FReadDb, db_mysql.FReadDb, db_postgres.FReadDb],
-    raises: [db_sqlite.EDb, db_mysql.EDb, db_postgres.EDb, EDb].} =
+    tags: [db_sqlite.ReadDbEffect, db_mysql.ReadDbEffect, db_postgres.ReadDbEffect],
+    raises: [db_sqlite.DbError, db_mysql.DbError, db_postgres.DbError, DbError].} =
   ## Executes the query and returns the first column of the first row of the result dataset.
   ## Returns "" if the dataset contains no rows or the database value is NULL.
   doEachCmdResErr(getValue, dbId, query, args)
 
 proc tryInsertId*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): int64 {.
-    tags: [db_sqlite.FWriteDb, db_mysql.FWriteDb, db_postgres.FWriteDb],
-    raises: [db_postgres.EDb, ValueError].} =
+    tags: [db_sqlite.WriteDbEffect, db_mysql.WriteDbEffect, db_postgres.WriteDbEffect],
+    raises: [db_postgres.DbError, ValueError].} =
   ## Executes the query (typically "INSERT") and returns the generated ID for the
   ## row, or -1 in case of an error.
   doEachCmdResNoErr(tryInsertId, dbId, query, args)
 
 proc insertId*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): int64 {.
-    tags: [db_sqlite.FWriteDb, db_mysql.FWriteDb, db_postgres.FWriteDb],
-    raises: [db_postgres.EDb, EDb, ValueError].} =
+    tags: [db_sqlite.WriteDbEffect, db_mysql.WriteDbEffect, db_postgres.WriteDbEffect],
+    raises: [db_postgres.DbError, DbError, ValueError].} =
   ## Executes the query (typically "INSERT") and returns the generated ID for the row.
   doEachCmdResErr(tryInsertId, dbId, query, args)
 
 proc execAffectedRows*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): int64 {.
-    tags: [db_sqlite.FReadDb, db_mysql.FReadDb, db_postgres.FReadDb,
-      db_sqlite.FWriteDb, db_mysql.FWriteDb, db_postgres.FWriteDb],
-    raises: [db_sqlite.EDb, db_mysql.EDb, db_postgres.EDb, EDb, ValueError].} =
+    tags: [db_sqlite.ReadDbEffect, db_mysql.ReadDbEffect, db_postgres.ReadDbEffect,
+      db_sqlite.WriteDbEffect, db_mysql.WriteDbEffect, db_postgres.WriteDbEffect],
+    raises: [db_sqlite.DbError, db_mysql.DbError, db_postgres.DbError, DbError, ValueError].} =
   ## Runs the query (typically "UPDATE") and returns the number of affected rows.
   doEachCmdResErr(execAffectedRows, dbId, query, args)
 
-proc open*(dbId: DbConnId, connection, user, password, database: string) {.tags: [db_sqlite.FDb,
-    db_mysql.FDb, db_postgres.FDb], raises: [db_sqlite.EDb, db_mysql.EDb, db_postgres.EDb, EDb,
+proc open*(dbId: DbConnId, connection, user, password, database: string) {.
+    tags: [db_sqlite.DbEffect, db_mysql.DbEffect, db_postgres.DbEffect],
+    raises: [db_sqlite.DbError, db_mysql.DbError, db_postgres.DbError, DbError,
     OverflowError, ValueError].} =
-  ## Opens a database connection. Raises EDb if the connection could not be established.
+  ## Opens a database connection. Raises DbError if the connection could not be established.
   let db = dbId.getDbId(theDbObj)
   case theDbObj.dbInfo[db].kind:
     of Sqlite:
@@ -258,7 +266,8 @@ proc open*(dbId: DbConnId, connection, user, password, database: string) {.tags:
     else: dbError("Error: unknown Db type")
 
 proc close*(dbId: DbConnId) {.
-      tags: [db_sqlite.FDb, db_mysql.FDb, db_postgres.FDb], raises: [db_sqlite.EDb].} =
+      tags: [db_sqlite.DbEffect, db_mysql.DbEffect, db_postgres.DbEffect],
+      raises: [db_sqlite.DbError].} =
   ## Closes the database connection.
   let db = dbId.getDbId(theDbObj)
   case theDbObj.dbInfo[db].kind:
@@ -280,7 +289,8 @@ proc close*(dbId: DbConnId) {.
     else: discard
 
 proc setEncoding*(dbId: DbConnId; encoding: string): bool {.
-    tags: [db_sqlite.FDb, db_mysql.FDb, db_postgres.FDb], raises: [db_sqlite.EDb].} =
+    tags: [db_sqlite.DbEffect, db_mysql.DbEffect, db_postgres.DbEffect],
+    raises: [db_sqlite.DbError].} =
   ## Sets the encoding of a database connection, returns true for success, false for failure.
   let db = dbId.getDbId(theDbObj)
   case theDbObj.dbInfo[db].kind:
@@ -298,20 +308,21 @@ proc setEncoding*(dbId: DbConnId; encoding: string): bool {.
 #let dbConn = cast[db_sqlite.DbConn](theDbObj.dbInfo[db].db)
 #for r in db_sqlite.fastRows(dbConn, db_sqlite.SqlQuery(query), args):
 #  yield r
-template fastRowsIterate(conn, cmd, sqCmd: expr, db: int, query: SqlQuery, args: varargs[string, `$`]): stmt =
+template fastRowsIterate(conn, cmd, sqCmd: untyped; db: int,
+                         query: SqlQuery, args: varargs[string, `$`]) =
   let dbConn = cast[`conn`](theDbObj.dbInfo[db].db)
   for r in `cmd`(dbConn, `sqCmd`(query), args):
     yield r
 
 iterator fastRows*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): Row {.
-    tags: [db_sqlite.FReadDb, db_mysql.FReadDb, db_postgres.FReadDb],
-    raises: [db_sqlite.EDb, db_mysql.EDb, db_postgres.EDb, EDb].} =
+    tags: [db_sqlite.ReadDbEffect, db_mysql.ReadDbEffect, db_postgres.ReadDbEffect],
+    raises: [db_sqlite.DbError, db_mysql.DbError, db_postgres.DbError, DbError].} =
   ## Executes the query and iterates over the result dataset.
   ##
   ## This is very fast, but potentially dangerous. Use this iterator only if you require ``ALL`` the rows.
   ##
   ## Breaking the `fastRows()` iterator during a loop will cause the next database query to raise
-  ## an [EDb] exception
+  ## an [DbError] exception
   ## ``Commands out of sync``.
   let db = dbId.getDbId(theDbObj)
   case theDbObj.dbInfo[db].kind:
@@ -330,7 +341,8 @@ iterator fastRows*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]):
 #    instR.row[i] = db_sqlite.`[]`(r, i.int32)
 #  instR.len = r.len
 #  yield instR
-template instantRowsIterate(conn, cmd, sqCmd, brktCmd: expr, db: int, query: SqlQuery, args: varargs[string, `$`]): stmt =
+template instantRowsIterate(conn, cmd, sqCmd, brktCmd: untyped; db: int,
+                            query: SqlQuery, args: varargs[string, `$`]) =
   let dbConn = cast[`conn`](theDbObj.dbInfo[db].db)
   for r in `cmd`(dbConn, sqCmd(query), args):
     instR.row.setlen(r.len)                 # re-dimension instR
@@ -340,9 +352,10 @@ template instantRowsIterate(conn, cmd, sqCmd, brktCmd: expr, db: int, query: Sql
     yield instR
 
 iterator instantRows*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`]): InstantRow {.
-    tags: [db_sqlite.FReadDb, db_mysql.FReadDb, db_postgres.FReadDb],
-    raises: [db_sqlite.EDb, db_mysql.EDb, db_postgres.EDb, EDb].} =
-  ## Same as fastRows but returns a handle that can be used to get column text on demand using [].
+    tags: [db_sqlite.ReadDbEffect, db_mysql.ReadDbEffect, db_postgres.ReadDbEffect],
+    raises: [db_sqlite.DbError, db_mysql.DbError, db_postgres.DbError, DbError].} =
+  ## Same as fastRows but returns a handle that can be used to get
+  ## column text on demand using [].
   ## Returned handle is valid only within the interator body.
   let db = dbId.getDbId(theDbObj)
   var instR: InstantRow
@@ -351,14 +364,17 @@ iterator instantRows*(dbId: DbConnId; query: SqlQuery; args: varargs[string, `$`
   instR.row.setLen(0)
   case theDbObj.dbInfo[db].kind:
     of Sqlite:
-      instantRowsIterate(db_sqlite.DbConn, db_sqlite.instantRows, db_sqlite.SqlQuery, db_sqlite.`[]`,
-            db, query, args)
+      instantRowsIterate(db_sqlite.DbConn, db_sqlite.instantRows,
+                         db_sqlite.SqlQuery, db_sqlite.`[]`,
+                         db, query, args)
     of Mysql:
-      instantRowsIterate(db_mysql.DbConn, db_mysql.instantRows, db_mysql.SqlQuery, db_mysql.`[]`,
-            db, query, args)
+      instantRowsIterate(db_mysql.DbConn, db_mysql.instantRows,
+                         db_mysql.SqlQuery, db_mysql.`[]`,
+                         db, query, args)
     of Postgres:
-      instantRowsIterate(db_postgres.DbConn, db_postgres.instantRows, db_postgres.SqlQuery, db_postgres.`[]`,
-            db, query, args)
+      instantRowsIterate(db_postgres.DbConn, db_postgres.instantRows,
+                         db_postgres.SqlQuery, db_postgres.`[]`,
+                         db, query, args)
     else: dbError("Error: unknown Db type")
 
 proc `[]`*(row: InstantRow; col: int): string {.inline, raises: [], tags: [].} =
